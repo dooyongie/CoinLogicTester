@@ -8,19 +8,16 @@ import time
 
 # 2026 Next-Gen 설정
 st.set_page_config(page_title="Crypto Quant Sandbox", layout="wide")
-st.title("🚀 Crypto Quant Sandbox (Global Stability)")
-st.markdown("### 📊 전 세계 어디서나 끊김 없는 데이터로 나만의 퀀트 전략을 검증하세요.")
+st.title("🚀 Crypto Quant Sandbox (Master Edition)")
+st.markdown("### 📊 시간대 필터와 복합 지표를 활용한 무결점 퀀트 전략 시뮬레이터")
 
 # ==========================================
-# 🌟 [엔진 교체] Yahoo Finance 기반 데이터 수집 (IP 차단 해결)
+# 데이터 수집 엔진 (Yahoo Finance + KST 보정)
 # ==========================================
 @st.cache_data(show_spinner=False)
 def fetch_data_via_yf(symbol, start_date, end_date, interval="5m"):
-    # 바이비트 티커(BTCUSDT)를 야후 규격(BTC-USD)으로 변환
     yf_symbol = symbol.replace("USDT", "-USD")
-    
     try:
-        # 야후 파이낸스는 5분/15분 데이터의 경우 최근 60일까지만 제공하는 제약이 있음
         data = yf.download(
             tickers=yf_symbol,
             start=start_date,
@@ -28,28 +25,22 @@ def fetch_data_via_yf(symbol, start_date, end_date, interval="5m"):
             interval=interval,
             progress=False
         )
-        
-        if data.empty:
-            return None
-            
+        if data.empty: return None
         df = data.reset_index()
-        # 멀티인덱스 컬럼 정리 (yfinance 최신버전 대응)
         df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
-        
-        # 컬럼명 표준화
         rename_map = {'Datetime': 'timestamp', 'Date': 'timestamp', 'Open': 'open', 
                       'High': 'high', 'Low': 'low', 'Close': 'close', 'Volume': 'volume'}
         df.rename(columns=rename_map, inplace=True)
         
-        # 타임존 제거 및 필요한 컬럼만 추출
-        df['timestamp'] = df['timestamp'].dt.tz_localize(None)
+        # 🔴 중요: 야후 데이터(UTC)를 한국 시간(KST, +9)으로 보정
+        df['timestamp'] = df['timestamp'].dt.tz_localize(None) + pd.Timedelta(hours=9)
         return df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
     except Exception as e:
         st.error(f"데이터 로드 실패: {e}")
         return None
 
 # ==========================================
-# 지표 및 백테스트 로직 (총감독님 지시사항 반영)
+# 복합 기술적 지표 계산
 # ==========================================
 def add_indicators(df, p):
     # RSI
@@ -57,15 +48,51 @@ def add_indicators(df, p):
     gain = (delta.where(delta > 0, 0)).ewm(alpha=1/p['rsi_period'], adjust=False).mean()
     loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/p['rsi_period'], adjust=False).mean()
     df['rsi'] = 100 - (100 / (1 + gain / loss))
+    
     # 볼린저 밴드
     df['bb_mid'] = df['close'].rolling(window=p['bb_window']).mean()
     df['bb_std'] = df['close'].rolling(window=p['bb_window']).std(ddof=0)
     df['bb_lower'] = df['bb_mid'] - (p['bb_mult'] * df['bb_std'])
+    
+    # 이동평균선
     df['sma_fast'] = df['close'].rolling(window=p['ma_fast']).mean()
     df['sma_slow'] = df['close'].rolling(window=p['ma_slow']).mean()
+    
+    # 스토캐스틱
+    ndays_high = df['high'].rolling(window=p['stoch_k_len']).max()
+    ndays_low = df['low'].rolling(window=p['stoch_k_len']).min()
+    fast_k = 100 * (df['close'] - ndays_low) / (ndays_high - ndays_low)
+    df['stoch_k'] = fast_k.rolling(window=p['stoch_k_smooth']).mean()
+    df['stoch_d'] = df['stoch_k'].rolling(window=p['stoch_d_smooth']).mean()
+    
     return df
 
-def run_backtest_pro(df, p):
+# ==========================================
+# 🌟 시간대 필터 로직 (자정 통과 지원)
+# ==========================================
+def check_time_filter(dt, params):
+    if not params['use_time_filter']: return True
+    t = dt.time()
+    # 오전장 체크
+    if params['use_s1']:
+        start, end = params['s1_start'], params['s1_end']
+        if start <= end:
+            if start <= t <= end: return True
+        else: # 자정 넘김
+            if t >= start or t <= end: return True
+    # 야간장 체크
+    if params['use_s2']:
+        start, end = params['s2_start'], params['s2_end']
+        if start <= end:
+            if start <= t <= end: return True
+        else: # 자정 넘김
+            if t >= start or t <= end: return True
+    return False
+
+# ==========================================
+# 마스터 백테스트 엔진
+# ==========================================
+def run_backtest_master(df, p):
     balance = 10_000 
     position = 0
     entry_price = 0
@@ -76,12 +103,16 @@ def run_backtest_pro(df, p):
     for i in range(30, len(df)-1):
         prev = df.iloc[i-1]; current = df.iloc[i]; next_candle = df.iloc[i+1]
         
+        # --- [ENTRY] ---
         if position == 0:
             buy_signal = True
+            if p['use_time_filter'] and not check_time_filter(current['timestamp'], p): buy_signal = False
             if p['use_ma_cross'] and not (current['sma_fast'] > current['sma_slow'] and prev['sma_fast'] <= prev['sma_slow']): buy_signal = False
+            if p['use_stoch_cross'] and not (current['stoch_k'] > current['stoch_d'] and prev['stoch_k'] <= prev['stoch_d']): buy_signal = False
             if p['use_bb_touch'] and not (current['low'] <= current['bb_lower']): buy_signal = False
             if p['use_rsi'] and not (current['rsi'] <= p['rsi_buy_limit']): buy_signal = False
-            if not any([p['use_ma_cross'], p['use_bb_touch'], p['use_rsi']]): buy_signal = False
+            
+            if not any([p['use_ma_cross'], p['use_stoch_cross'], p['use_bb_touch'], p['use_rsi']]): buy_signal = False
 
             if buy_signal:
                 entry_price = next_candle['open']
@@ -89,24 +120,30 @@ def run_backtest_pro(df, p):
                 position = (balance * (1 - fee_rate)) / entry_price 
                 buy_points.append((next_candle['timestamp'], entry_price))
 
+        # --- [EXIT] ---
         elif position > 0:
             elapsed_mins = (next_candle['timestamp'] - entry_time).total_seconds() / 60
             base_tp = entry_price * (1 + p['tp_pct'] / 100)
             
-            # 🌟 [설명 반영] 익절 모드 결정
+            # 익절 타겟 설정
             if p['exit_mode'] == "🎯 Max 모드":
                 target_price = max(current['bb_mid'], base_tp)
-            else: # OR 모드 (먼저 닿는 쪽)
+            else:
                 target_price = min(current['bb_mid'], base_tp) 
                 
-            # 🌟 [설명 반영] 다운시프트 개입
+            # 다운시프트
             if p['use_downshift'] and elapsed_mins >= p['downshift_mins']:
                 target_price = min(target_price, entry_price * (1 + p['downshift_tp_pct'] / 100))
                 
             sl_price = entry_price * (1 - p['sl_pct'] / 100)
             sell_price = 0
+            
+            # 1. 손절/익절 체크
             if next_candle['low'] <= sl_price: sell_price = min(next_candle['open'], sl_price)
             elif next_candle['high'] >= target_price: sell_price = max(next_candle['open'], target_price)
+            # 2. 이평선 데드크로스 체크 (추가)
+            elif p['use_dead_cross'] and (current['sma_slow'] > current['sma_fast'] and prev['sma_slow'] <= prev['sma_fast']):
+                sell_price = next_candle['open']
             
             if sell_price > 0:
                 balance = position * sell_price * (1 - fee_rate)
@@ -119,66 +156,79 @@ def run_backtest_pro(df, p):
 # ==========================================
 # UI 셋업
 # ==========================================
-st.sidebar.header("🌐 1. 시장 설정 (Global)")
+st.sidebar.header("🌐 1. 시장 설정")
 ticker = st.sidebar.selectbox("대상 코인", ["BTCUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT", "DOGEUSDT"])
 col1, col2 = st.sidebar.columns(2)
-# 야후 5분봉 제약(60일)을 고려하여 기본값 설정
 start_date = col1.date_input("시작일", datetime.date.today() - datetime.timedelta(days=29))
 end_date = col2.date_input("종료일", datetime.date.today())
 timeframe = st.sidebar.selectbox("⏱️ 타임프레임", options=['5m', '15m', '30m', '1h', '1d'], index=0)
 
 st.sidebar.markdown("---")
-st.sidebar.header("🧩 2. 매수 전략 (Entry)")
+st.sidebar.header("🕒 2. 시간대 필터 (KST 기준)")
 p = {}
-with st.sidebar.expander("📈 이동평균선 설정"):
-    p['use_ma_cross'] = st.checkbox("MA 골든크로스 사용")
-    p['ma_fast'] = st.number_input("단기(Fast)", value=10)
-    p['ma_slow'] = st.number_input("장기(Slow)", value=20)
-with st.sidebar.expander("📉 볼린저 밴드 & RSI", expanded=True):
+p['use_time_filter'] = st.sidebar.checkbox("매매 허용 시간대 적용", value=True)
+if p['use_time_filter']:
+    p['use_s1'] = st.sidebar.checkbox("☀️ 오전 세션", value=True)
+    if p['use_s1']:
+        c1, c2 = st.sidebar.columns(2)
+        p['s1_start'] = c1.time_input("오전 시작", datetime.time(8, 30), key="s1s")
+        p['s1_end'] = c2.time_input("오전 종료", datetime.time(12, 0), key="s1e")
+    p['use_s2'] = st.sidebar.checkbox("🌙 야간 세션", value=True)
+    if p['use_s2']:
+        c3, c4 = st.sidebar.columns(2)
+        p['s2_start'] = c3.time_input("야간 시작", datetime.time(22, 0), key="s2s")
+        p['s2_end'] = c4.time_input("야간 종료", datetime.time(2, 30), key="s2e")
+
+st.sidebar.markdown("---")
+st.sidebar.header("🧩 3. 매수 전략 (Entry)")
+with st.sidebar.expander("📈 이평선 & 스토캐스틱"):
+    p['use_ma_cross'] = st.checkbox("MA 골든크로스")
+    p['ma_fast'] = st.number_input("단기 이평", value=10)
+    p['ma_slow'] = st.number_input("장기 이평", value=20)
+    st.markdown("---")
+    p['use_stoch_cross'] = st.checkbox("스토캐스틱 골든크로스")
+    p['stoch_k_len'] = st.number_input("K 길이", value=5)
+    p['stoch_k_smooth'] = st.number_input("K 스무딩", value=3)
+    p['stoch_d_smooth'] = st.number_input("D 스무딩", value=3)
+
+with st.sidebar.expander("📉 볼밴 & RSI", expanded=True):
     p['use_bb_touch'] = st.checkbox("볼밴 하단 터치", value=True)
     p['bb_window'] = st.number_input("BB 기간", value=20)
-    p['bb_mult'] = st.number_input("BB 승수", value=2.0, step=0.1)
-    p['use_rsi'] = st.checkbox("RSI 과매도 필터", value=True)
+    p['bb_mult'] = st.number_input("BB 승수", value=2.0)
+    p['use_rsi'] = st.checkbox("RSI 필터", value=True)
     p['rsi_period'] = st.number_input("RSI 기간", value=14)
     p['rsi_buy_limit'] = st.number_input("RSI 진입선", value=30.0)
 
 st.sidebar.markdown("---")
-st.sidebar.header("🛡️ 3. 청산 로직 (Exit)")
-c8, c9 = st.sidebar.columns(2)
-p['tp_pct'] = c8.number_input("✅ 목표 수익 %", value=1.0, step=0.1, format="%.1f")
-p['sl_pct'] = c9.number_input("🛑 손절 라인 %", value=2.0, step=0.1, format="%.1f")
+st.sidebar.header("🛡️ 4. 청산 전략 (Exit)")
+c5, c6 = st.sidebar.columns(2)
+p['tp_pct'] = c5.number_input("✅ 목표 수익 %", value=1.0, step=0.1)
+p['sl_pct'] = c6.number_input("🛑 손절 라인 %", value=2.0, step=0.1)
+p['exit_mode'] = st.sidebar.radio("익절 모드", ["🎯 Max 모드", "⚡ OR 모드"], help="Max: 중앙선까지 수익 극대화 / OR: 먼저 닿는 쪽 청산")
+p['use_dead_cross'] = st.sidebar.checkbox("📉 이평선 데드크로스 시 탈출", help="추세가 꺾일 때 강제 매도하여 손실을 최소화합니다.")
 
-# 🌟 [설명 추가] 익절 모드 설명 유저 친화적 배치
-st.sidebar.markdown("**익절 모드 선택**")
-p['exit_mode'] = st.sidebar.radio(
-    "익절 방식", ["🎯 Max 모드", "⚡ OR 모드"],
-    help="🎯 Max 모드: 목표 수익률에 도달해도 볼밴 중앙선이 더 높다면 중앙선까지 기다려 수익을 극대화합니다. \n\n⚡ OR 모드: 목표 수익률이나 중앙선 중 먼저 닿는 곳에서 즉시 팔아 자금 회전율을 높입니다."
-)
-
-st.sidebar.markdown("---")
-# 🌟 [설명 추가] 다운시프트 상세 설명
-st.sidebar.markdown("##### ⏳ 특수 로직: 다운시프트(Downshift)")
+st.sidebar.markdown("##### ⏳ 다운시프트 (Downshift)")
 p['use_downshift'] = st.sidebar.checkbox("다운시프트 활성화", value=True)
 if p['use_downshift']:
-    st.sidebar.caption("💡 진입 후 가격이 오르지 않고 시간이 지체될 때, 목표가를 낮춰서 본절 부근에서 빠르게 탈출하는 전문 단타 로직입니다.")
-    c10, c11 = st.sidebar.columns(2)
-    p['downshift_mins'] = c10.number_input("발동 시간(분)", value=60, step=15)
-    p['downshift_tp_pct'] = c11.number_input("하향 목표 %", value=0.2, step=0.1, format="%.1f")
+    st.sidebar.caption("💡 일정 시간 이후 목표가를 낮춰 탈출하는 로직")
+    c7, c8 = st.sidebar.columns(2)
+    p['downshift_mins'] = c7.number_input("발동(분)", value=60)
+    p['downshift_tp_pct'] = c8.number_input("목표 %", value=0.2)
 
-run_btn = st.sidebar.button("▶️ 퀀트 시뮬레이션 실행", type="primary", width="stretch")
+run_btn = st.sidebar.button("▶️ 마스터 전략 시뮬레이션 시작", type="primary", width="stretch")
 
 # ==========================================
-# 실행 메인
+# 메인 실행
 # ==========================================
 if run_btn:
-    with st.spinner("야후 파이낸스에서 데이터를 안전하게 긁어오는 중..."):
+    with st.spinner("데이터 로드 및 KST 보정 중..."):
         df = fetch_data_via_yf(ticker, start_date, end_date, interval=timeframe)
         
     if df is not None:
         df = add_indicators(df, p)
-        profit, trades, buys, sells, result_df = run_backtest_pro(df, p)
+        profit, trades, buys, sells, result_df = run_backtest_master(df, p)
         
-        st.subheader(f"📊 백테스트 결과: {ticker}")
+        st.subheader(f"📊 백테스트 리포트: {ticker} ({timeframe})")
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("최종 수익률", f"{profit:.2f}%")
         c2.metric("거래 횟수", f"{len(trades)}회")
@@ -195,10 +245,7 @@ if run_btn:
         fig.update_layout(height=600, template="plotly_dark", xaxis_rangeslider_visible=False)
         st.plotly_chart(fig, width="stretch")
         
-        # 💰 [레퍼럴 수익화]
         st.markdown("---")
-        st.markdown("### 💰 이 전략으로 바이비트에서 자동매매를 시작하세요!")
-        st.info("💡 본 사이트의 데이터는 검증용입니다. 실전 매매는 업계 최저 수수료를 제공하는 **바이비트(Bybit)**에서 진행하셔야 수익을 보존할 수 있습니다.")
-        st.link_button("⚫ 바이비트(Bybit) 수수료 할인 + 증정금 혜택 가입", "https://www.bybit.com/register?affiliate_id=총감독님_아이디", type="primary", width="stretch")
-    else:
-        st.error("데이터 로드에 실패했습니다. (5분/15분봉은 최근 60일 이내만 가능합니다)")
+        st.markdown("### 💰 실전 매매는 업계 최저 수수료 바이비트에서!")
+        st.info("💡 퀀트 봇의 핵심은 수수료입니다. 아래 링크로 가입하고 수수료 혜택을 꼭 받으세요.")
+        st.link_button("⚫ 바이비트(Bybit) 수수료 할인 가입", "https://www.bybit.com/register?affiliate_id=총감독님_아이디", type="primary", width="stretch")
