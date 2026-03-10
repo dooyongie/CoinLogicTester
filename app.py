@@ -15,10 +15,16 @@ st.markdown("### 📊 Bybit 실시간 데이터를 활용하여 나만의 퀀트
 # ==========================================
 @st.cache_data(show_spinner=False)
 def fetch_bybit_data(symbol, start_date, end_date, interval="5"):
-    url = "https://api.bybit.com/v5/market/kline"
-    # Bybit는 밀리초(ms) 단위 timestamp 사용
+    # 🔴 수정 1: 주소를 api.bybit.com에서 api.bytick.com으로 변경 (차단 확률 낮음)
+    url = "https://api.bytick.com/v5/market/kline"
+    
     start_ts = int(pd.to_datetime(start_date).timestamp() * 1000)
     end_ts = int((pd.to_datetime(end_date) + pd.Timedelta(days=1)).timestamp() * 1000)
+
+    # 🔴 수정 2: 브라우저처럼 보이게 만드는 '위장막(Headers)' 추가
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
 
     params = {
         "category": "linear",
@@ -30,18 +36,28 @@ def fetch_bybit_data(symbol, start_date, end_date, interval="5"):
     }
     
     try:
-        res = requests.get(url, params=params)
+        # headers를 포함하여 요청
+        res = requests.get(url, params=params, headers=headers, timeout=10)
+        
+        # 🔴 수정 3: 응답이 성공(200 OK)인지 먼저 확인
+        if res.status_code != 200:
+            st.error(f"서버 응답 오류 (상태 코드: {res.status_code})")
+            # 만약 403 에러라면 IP 차단임
+            if res.status_code == 403:
+                st.warning("현재 서버 IP가 바이비트에 의해 차단되었습니다. 잠시 후 다시 시도하거나 주소를 변경해야 합니다.")
+            return None
+            
         data = res.json()
         
         if data['retCode'] != 0:
-            st.error(f"Bybit API Error: {data['retMsg']}")
+            st.error(f"Bybit API 메시지: {data['retMsg']}")
             return None
             
         klines = data['result']['list']
         if not klines:
+            st.warning("선택한 기간에 데이터가 없습니다.")
             return None
             
-        # Bybit는 최신순(Reverse)으로 데이터를 주므로 시간순으로 뒤집어야 함
         df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'turnover'])
         df = df.iloc[::-1] 
         
@@ -50,8 +66,12 @@ def fetch_bybit_data(symbol, start_date, end_date, interval="5"):
             df[col] = df[col].astype(float)
             
         return df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
+        
+    except requests.exceptions.JSONDecodeError:
+        st.error("데이터 형식이 올바르지 않습니다. (JSON 파싱 실패)")
+        return None
     except Exception as e:
-        st.error(f"연결 오류: {e}")
+        st.error(f"연결 오류 발생: {e}")
         return None
 
 # ==========================================
@@ -231,3 +251,4 @@ if run_btn:
             type="primary", 
             width='stretch'
         )
+
