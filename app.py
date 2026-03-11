@@ -14,42 +14,53 @@ st.title("🚀 업비트 퀀트 매매기법 테스트")
 st.markdown("### 📊 수십 가지 지표를 조합하여 업비트 최적의 거래 조건을 설계하세요!")
 
 # ==========================================
-# 2. 🌟 업비트 전용 데이터 무제한 수집 엔진 (프로그레스 바 & 에러 방어)
+# 2. 🌟 업비트 전용 데이터 수집 엔진 (재시도 로직 추가)
 # ==========================================
 @st.cache_data(show_spinner=False)
 def fetch_upbit_data(ticker, start_date, end_date):
     end_dt = pd.to_datetime(end_date) + pd.Timedelta(days=1)
     start_dt = pd.to_datetime(start_date)
     
-    # 목표 캔들 개수 및 루프 횟수 계산
     total_expected_candles = (end_dt - start_dt).total_seconds() / 300
     target_steps = min(int(total_expected_candles / 200) + 1, 3000)
     
     dfs = []
     to_dt = end_dt
     
-    # 🌟 [수정] 스피너 대신 동적 프로그레스 바 적용
-    progress = st.progress(0, text=f"📥 업비트 과거 데이터 수집 준비 중... (목표: 약 {int(total_expected_candles):,}봉)")
+    progress = st.progress(0, text=f"📥 데이터 수집 준비 중...")
     
     for step in range(target_steps): 
-        df = pyupbit.get_ohlcv(ticker, interval="minute5", to=to_dt, count=200)
+        # 🌟 [핵심 패치] 실패 시 최대 3번 재시도 로직
+        success = False
+        for retry in range(3):
+            try:
+                df = pyupbit.get_ohlcv(ticker, interval="minute5", to=to_dt, count=200)
+                if df is not None and not df.empty:
+                    dfs.append(df)
+                    to_dt = df.index[0]
+                    success = True
+                    break # 성공 시 재시도 루프 탈출
+            except Exception:
+                pass
+            
+            # 실패 시 대기 시간을 늘려가며 재시도 (0.5초 -> 1.0초)
+            time.sleep(0.5 * (retry + 1))
         
-        # API 응답 없음(차단) 또는 데이터 끝단 도달 시 루프 종료
-        if df is None or df.empty:
+        # 3번 다 실패했거나 데이터의 끝에 도달한 경우
+        if not success:
             break
             
-        dfs.append(df)
-        to_dt = df.index[0]
-        
-        # 진행률 UI 실시간 업데이트
+        # 진행률 UI 업데이트
         current_progress = min((step + 1) / target_steps, 1.0)
-        progress.progress(current_progress, text=f"📥 거래소 데이터 수집 중... ({len(dfs)*200:,}봉 완료 / 목표 {target_steps*200:,}봉)")
+        progress.progress(current_progress, text=f"📥 데이터 수집 중... ({len(dfs)*200:,}봉 완료)")
         
         if to_dt <= start_dt:
             break
-        time.sleep(0.12)  # 초당 10회 제한 방어
         
-    progress.empty() # 수집 완료 후 프로그레스 바 깔끔하게 삭제
+        # 🌟 [핵심 패치] 공용 IP 환경을 고려하여 대기 시간을 0.12 -> 0.2초로 소폭 상향
+        time.sleep(0.2) 
+        
+    progress.empty()
     
     if not dfs:
         return None
@@ -57,10 +68,9 @@ def fetch_upbit_data(ticker, start_date, end_date):
     res = pd.concat(dfs).sort_index()
     res = res[~res.index.duplicated(keep='first')]
     
-    # 🌟 [수정] 중간에 API가 끊겨 데이터가 잘렸을 경우 경고 (침묵의 실패 방어)
     actual_start = res.index[0]
-    if actual_start > start_dt + pd.Timedelta(days=1):
-        st.warning(f"⚠️ 업비트 API 호출 제한(또는 데이터 한계)으로 인해 {actual_start.strftime('%Y-%m-%d')} 이전 데이터는 수집되지 않았습니다. 수집된 구간까지만 안전하게 테스트를 진행합니다.")
+    if actual_start > start_dt + pd.Timedelta(hours=1): # 1일이 아니라 1시간 오차로 정밀화
+        st.warning(f"⚠️ 업비트 API 호출 제한으로 인해 {actual_start.strftime('%Y-%m-%d')} 이전 데이터는 누락되었습니다. (수집된 구간: {actual_start.strftime('%m/%d')} ~ {end_dt.strftime('%m/%d')})")
 
     res = res[(res.index >= start_dt) & (res.index < end_dt)]
     
@@ -375,3 +385,4 @@ if run_btn:
     with tab2:
         st.markdown("이 무료 백테스트 사이트가 여러분의 투자에 도움이 되셨다면, 커피 한 잔의 여유를 선물해 주세요! ☕")
         st.link_button("💸 개발자 토스 익명 송금하기", "https://toss.me/총감독님", use_container_width=True)
+
