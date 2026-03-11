@@ -266,7 +266,7 @@ p['use_downshift'] = st.sidebar.checkbox("⏳ 다운시프트 (시간 지체 시
 if p['use_downshift']:
     c_dsm, c_dsp = st.sidebar.columns(2)
     # 🔴 [안전장치] int() 래핑 적용
-    p['downshift_mins'] = int(st.number_input("발동(분)", value=60))
+    p['downshift_mins'] = int(c_dsm.number_input("발동(분)", value=60))
     p['downshift_tp_pct'] = c_dsp.number_input("하향 %", value=0.2, step=0.1)
 
 run_btn = st.sidebar.button("▶️ 퀀트 전략 백테스트 실행", type="primary", use_container_width=True)
@@ -315,3 +315,4 @@ if run_btn:
     st.markdown("### 💰 완벽한 타점을 찾으셨나요? 이제 실전입니다.")
     st.info("💡 전략의 승률을 극대화하려면 수수료 할인이 필수입니다. 아래 링크를 통해 평생 수수료 할인 계정을 만드세요.")
     st.link_button("⚫ 바이비트(Bybit) 수수료 할인 및 VIP 혜택 가입", "https://www.bybit.com/register?affiliate_id=총감독님_아이디", type="primary")
+
