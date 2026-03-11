@@ -2,34 +2,53 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import yfinance as yf
+import pyupbit
 import datetime
+import time
 
 # ==========================================
 # 1. UI 및 기본 설정
 # ==========================================
-st.set_page_config(page_title="나만의 퀀트 매매기법 테스트", layout="wide")
-st.title("🚀 나만의 퀀트 매매기법 테스트")
-st.markdown("### 📊 수십 가지 지표를 조합하여 나만의 최적 거래 조건을 설계하세요!")
+st.set_page_config(page_title="업비트 퀀트 매매기법 테스트", layout="wide")
+st.title("🚀 업비트 퀀트 매매기법 테스트")
+st.markdown("### 📊 수십 가지 지표를 조합하여 업비트 최적의 거래 조건을 설계하세요!")
 
 # ==========================================
-# 2. 데이터 수집 및 캔들 합성 엔진
+# 2. 🌟 업비트 전용 데이터 수집 엔진 (pyupbit 적용)
 # ==========================================
 @st.cache_data(show_spinner=False)
-def fetch_base_data(symbol, start_date, end_date):
-    yf_symbol = symbol.replace("USDT", "-USD")
-    try:
-        data = yf.download(tickers=yf_symbol, start=start_date, end=pd.to_datetime(end_date) + pd.Timedelta(days=1), interval="5m", progress=False)
-        if data.empty: return None
-        df = data.reset_index()
-        df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
-        rename_map = {'Datetime': 'timestamp', 'Date': 'timestamp', 'Open': 'open', 'High': 'high', 'Low': 'low', 'Close': 'close', 'Volume': 'volume'}
-        df.rename(columns=rename_map, inplace=True)
-        df['timestamp'] = df['timestamp'].dt.tz_localize(None) + pd.Timedelta(hours=9)
-        return df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
-    except Exception as e:
-        st.error(f"데이터 로드 실패: {e}")
+def fetch_upbit_data(ticker, start_date, end_date):
+    end_dt = pd.to_datetime(end_date) + pd.Timedelta(days=1)
+    start_dt = pd.to_datetime(start_date)
+    
+    dfs = []
+    to_dt = end_dt
+    
+    for _ in range(100): 
+        df = pyupbit.get_ohlcv(ticker, interval="minute5", to=to_dt, count=200)
+        if df is None or df.empty:
+            break
+        dfs.append(df)
+        to_dt = df.index[0]
+        if to_dt <= start_dt:
+            break
+        time.sleep(0.12)  
+        
+    if not dfs:
         return None
+        
+    res = pd.concat(dfs).sort_index()
+    res = res[~res.index.duplicated(keep='first')]
+    
+    # 🟠 [H-2] 수정: end_dt 초과분 완벽 커팅
+    res = res[(res.index >= start_dt) & (res.index < end_dt)]
+    
+    # 🔴 [C-1] & 🟠 [M-1] 수정: 인덱스 명명 및 tz-aware 방어
+    res.index.name = 'timestamp'
+    res.reset_index(inplace=True)
+    res['timestamp'] = res['timestamp'].dt.tz_localize(None)
+    
+    return res[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
 
 def resample_dataframe(df, tf_rule):
     if tf_rule == '5T': return df
@@ -102,19 +121,16 @@ def check_time_filter(dt, params):
     return False
 
 # ==========================================
-# 4. 백테스트 코어 엔진 (청산 로직 업그레이드)
+# 4. 백테스트 코어 엔진
 # ==========================================
 def run_backtest_ultimate(df, p):
-    balance = 10_000 
+    balance = 10_000_000 
     position, entry_price, entry_time = 0, 0, None
     fee_rate = (p['fee_pct'] / 100) / 2
     trades, buy_points, sell_points = [], [], []
     
     for i in range(50, len(df)-1):
-        prev = df.iloc[i-1]
-        current = df.iloc[i]
-        next_candle = df.iloc[i+1]
-        
+        prev, current, next_candle = df.iloc[i-1], df.iloc[i], df.iloc[i+1]
         eval_candle = prev if p['entry_timing'] == "안전: 캔들 종가 마감 확인 후 진입" else current
         eval_prev = df.iloc[i-2] if p['entry_timing'] == "안전: 캔들 종가 마감 확인 후 진입" else prev
         
@@ -144,18 +160,12 @@ def run_backtest_ultimate(df, p):
             elapsed_mins = (next_candle['timestamp'] - entry_time).total_seconds() / 60
             base_tp = entry_price * (1 + p['tp_pct'] / 100)
             
-            # 🌟 [신규] 볼린저 밴드 목표가 설정 로직
             if p['bb_exit_target'] == "사용 안 함 (오직 목표수익% 적용)":
                 target_price = base_tp
             else:
                 bb_target_price = current['bb_mid'] if p['bb_exit_target'] == "BB 중앙선 터치 시" else current['bb_upper']
-                
-                if p['exit_mode'] == "🎯 Max 모드 (수익 극대화)":
-                    target_price = max(bb_target_price, base_tp)
-                else: # OR 모드
-                    target_price = min(bb_target_price, base_tp) 
+                target_price = max(bb_target_price, base_tp) if p['exit_mode'] == "🎯 Max 모드 (수익 극대화)" else min(bb_target_price, base_tp) 
             
-            # 다운시프트 개입
             if p['use_downshift'] and elapsed_mins >= p['downshift_mins']:
                 target_price = min(target_price, entry_price * (1 + p['downshift_tp_pct'] / 100))
                 
@@ -181,7 +191,7 @@ def run_backtest_ultimate(df, p):
         trades.append(profit_pct)
         sell_points.append((last_candle['timestamp'], sell_price))
 
-    return (balance / 10_000 - 1) * 100, trades, buy_points, sell_points, df
+    return (balance / 10_000_000 - 1) * 100, trades, buy_points, sell_points, df
 
 # ==========================================
 # 5. UI 사이드바
@@ -191,10 +201,10 @@ if st.sidebar.button("🔄 실시간 데이터 캐시 초기화", use_container_
     st.sidebar.success("캐시 초기화 완료! 최신 데이터를 불러옵니다.")
 
 st.sidebar.header("📂 1. 데이터 및 기본 세팅")
-ticker = st.sidebar.selectbox("테스트 코인", ["BTCUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT", "DOGEUSDT"])
+ticker = st.sidebar.selectbox("테스트 코인 (업비트 KRW 마켓)", ["KRW-BTC", "KRW-ETH", "KRW-XRP", "KRW-SOL", "KRW-DOGE", "KRW-SHIB"])
 c_d1, c_d2 = st.sidebar.columns(2)
 
-min_allowed_date = datetime.date.today() - datetime.timedelta(days=59)
+min_allowed_date = datetime.date.today() - datetime.timedelta(days=60)
 start_date = c_d1.date_input("시작일", 
                              value=max(datetime.date.today() - datetime.timedelta(days=29), min_allowed_date),
                              min_value=min_allowed_date,
@@ -206,7 +216,7 @@ tf_choice = st.sidebar.selectbox("⏱️ 캔들 타임프레임", list(tf_option
 timeframe = tf_options[tf_choice]
 
 p = {}
-p['fee_pct'] = st.sidebar.slider("💸 왕복 수수료 (%)", 0.00, 0.50, 0.10, step=0.01)
+p['fee_pct'] = st.sidebar.slider("💸 왕복 수수료 (%)", 0.00, 0.50, 0.10, step=0.01, help="업비트 기본 수수료는 편도 0.05%, 왕복 0.1% 입니다.")
 
 st.sidebar.markdown("---")
 st.sidebar.header("🕒 2. 매매 시간대 필터")
@@ -255,51 +265,42 @@ with st.sidebar.expander("🌊 오실레이터 & 슈퍼트렌드"):
     p['use_supertrend'] = st.checkbox("슈퍼트렌드 상승 전환")
     p['st_atr'] = int(st.number_input("ATR 기간", value=10)); p['st_mult'] = st.number_input("승수", value=3.0)
 
-# 🌟 [신규] 청산 전략 UI 대폭 업그레이드
 st.sidebar.markdown("---")
 st.sidebar.header("🛡️ 4. 청산 전략 (Exit)")
-
 c_tp, c_sl = st.sidebar.columns(2)
 p['tp_pct'] = c_tp.number_input("✅ 목표수익 %", value=1.0, step=0.1)
 p['sl_pct'] = c_sl.number_input("🛑 손절 %", value=2.0, step=0.1)
 
 st.sidebar.markdown("##### 🎯 볼린저 밴드 연동 익절")
-p['bb_exit_target'] = st.sidebar.radio(
-    "어느 선에서 익절하시겠습니까?", 
-    ["BB 중앙선 터치 시", "BB 상단선 터치 시", "사용 안 함 (오직 목표수익% 적용)"], 
-    index=0
-)
+p['bb_exit_target'] = st.sidebar.radio("어느 선에서 익절하시겠습니까?", ["BB 중앙선 터치 시", "BB 상단선 터치 시", "사용 안 함 (오직 목표수익% 적용)"], index=0)
 
 st.sidebar.markdown("##### ⚖️ 익절 결합 모드")
-p['exit_mode'] = st.sidebar.radio(
-    "목표수익% 와 볼밴 라인이 겹칠 때", 
-    ["🎯 Max 모드 (수익 극대화)", "⚡ OR 모드 (빠른 청산)"],
-    help="• Max 모드: 정해둔 %와 볼밴 라인 중 더 '높은' 가격을 기다려 크게 먹습니다.\n• OR 모드: 정해둔 %나 볼밴 라인 중 아무거나 먼저 닿으면 미련 없이 팝니다."
-)
+p['exit_mode'] = st.sidebar.radio("목표수익% 와 볼밴 라인이 겹칠 때", ["🎯 Max 모드 (수익 극대화)", "⚡ OR 모드 (빠른 청산)"])
 
 st.sidebar.markdown("---")
-p['use_dead_cross'] = st.sidebar.checkbox("📉 SMA 데드크로스 비상 탈출", help="목표가에 안 왔어도 단기 이평선이 장기 이평선을 뚫고 내려가면 즉시 던집니다.")
-p['use_downshift'] = st.sidebar.checkbox("⏳ 다운시프트 (시간 지체 시 탈출)", value=True, help="물려서 시간이 오래 지나면 목표가를 강제로 낮춰서 본절 부근에서 탈출합니다.")
+p['use_dead_cross'] = st.sidebar.checkbox("📉 SMA 데드크로스 비상 탈출")
+p['use_downshift'] = st.sidebar.checkbox("⏳ 다운시프트 (시간 지체 시 탈출)", value=True)
 if p['use_downshift']:
     c_dsm, c_dsp = st.sidebar.columns(2)
+    # 🔴 [C-2] 수정: UI 요소 위치 이탈 복구 (st. -> c_dsm.)
     p['downshift_mins'] = int(c_dsm.number_input("발동(분)", value=60))
     p['downshift_tp_pct'] = c_dsp.number_input("하향 %", value=0.2, step=0.1)
 
 run_btn = st.sidebar.button("▶️ 퀀트 전략 백테스트 실행", type="primary", use_container_width=True)
 
 # ==========================================
-# 6. 결과 출력
+# 6. 결과 출력 및 봇 템플릿 안내
 # ==========================================
 if run_btn:
-    if (end_date - start_date).days > 59:
-        st.error("⚠️ 야후 파이낸스의 5분봉 데이터는 최근 60일까지만 제공됩니다. 날짜 범위를 줄여주세요.")
+    if (end_date - start_date).days > 60:
+        st.error("⚠️ 업비트 API 부하를 방지하기 위해 최대 60일까지만 조회 가능합니다. 시작일을 조정해 주세요.")
         st.stop()
 
-    with st.spinner("⏳ 거래소 서버에서 과거 데이터를 불러와 매매 로직을 시뮬레이션 중입니다... (데이터 크기에 따라 3~5초 소요)"):
-        base_df = fetch_base_data(ticker, start_date, end_date)
+    with st.spinner("⏳ 업비트 서버에서 순정 과거 데이터를 수집 중입니다... (최대 10초 소요)"):
+        base_df = fetch_upbit_data(ticker, start_date, end_date)
         
-    if base_df is None:
-        st.error("⚠️ 데이터를 불러오지 못했습니다. 티커나 선택하신 날짜 범위를 다시 확인해 주세요.")
+    if base_df is None or base_df.empty:
+        st.error("⚠️ 데이터를 불러오지 못했습니다. 업비트 점검 중이거나 날짜를 확인해 주세요.")
         st.stop()
 
     df = resample_dataframe(base_df, timeframe)
@@ -326,6 +327,35 @@ if run_btn:
     if sells: st_times, sp = zip(*sells); fig.add_trace(go.Scatter(x=st_times, y=sp, mode='markers', marker=dict(symbol='triangle-down', size=15, color='red'), name='Sell'))
     fig.update_layout(height=650, template="plotly_dark", xaxis_rangeslider_visible=False)
     st.plotly_chart(fig, use_container_width=True)
+
+    # ==========================================
+    # 💰 [최종 수익화] 실전 봇 템플릿 판매 안내
+    # ==========================================
+    st.markdown("---")
+    st.subheader("🏆 백테스트로 검증한 나만의 기법, 이제 실전 봇으로 가동하세요.")
     
+    col_info1, col_info2 = st.columns([2, 1])
+    with col_info1:
+        st.success("✅ 시중에 떠도는 '사기성 봇'을 믿지 마세요. 본 사이트에서 직접 검증하신 타점 그대로 작동하는 **[업비트 전용 자동매매 엔진]**을 분양합니다.")
+        st.write("총감독이 직접 한 달간 실전에서 수익을 내며 다듬은 **기관급 방어 로직(텔레그램 연동, 서버 다운 방어, 다운시프트 탑재)**이 포함된 파이썬 템플릿입니다.")
+    
+    with col_info2:
+        st.link_button("📈 총감독의 실전 수익 인증 보러가기", "https://blog.naver.com/총감독님_블로그", use_container_width=True)
 
+    st.markdown("### 🛠️ 나만의 실전 봇 구축하기")
+    
+    tab1, tab2 = st.tabs(["👑 봇 엔진 템플릿 분양 (가이드 포함)", "☕ 자율 후원"])
+    
+    with tab1:
+        st.markdown("""
+        **[Standard 패키지] 무결점 코인 자동매매 파이썬 소스코드 + 세팅 가이드북 PDF**
+        * 코딩 지식 없어도 OK! 가이드북만 보고 따라 하면 5분 만에 세팅 완료.
+        * 백테스트에서 찾은 수치를 코드 상단 빈칸에 '복사+붙여넣기'만 하면 됩니다.
+        * 에러 발생 시 1초 만에 해결하는 '챗GPT 활용 CS 방어 비법' 수록.
+        """)
+        st.link_button("💎 자동매매 봇 템플릿 구매하기 (크몽)", "https://kmong.com/나의_크몽_서비스", type="primary", use_container_width=True)
+        st.caption("🚨 주의: 본 상품은 코딩 1:1 기술 지원을 제공하지 않는 '지식 및 템플릿 제공' 상품입니다.")
 
+    with tab2:
+        st.markdown("이 무료 백테스트 사이트가 여러분의 투자에 도움이 되셨다면, 커피 한 잔의 여유를 선물해 주세요! ☕")
+        st.link_button("💸 개발자 토스 익명 송금하기", "https://toss.me/총감독님", use_container_width=True)
