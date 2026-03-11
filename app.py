@@ -8,7 +8,7 @@ import datetime
 # ==========================================
 # 1. UI 및 기본 설정
 # ==========================================
-st.set_page_config(page_title="나만의 퀀트 매매기법 테스트", layout="wide")
+st.set_page_config(page_title="나만의 퀀트 매매기법 테스트(60일 이내 최신 기간으로 테스트)", layout="wide")
 st.title("🚀 나만의 퀀트 매매기법 테스트")
 st.markdown("### 📊 수십 가지 지표를 조합하여 나만의 최적 거래 조건을 설계하세요!")
 
@@ -315,4 +315,5 @@ if run_btn:
     st.markdown("### 💰 완벽한 타점을 찾으셨나요? 이제 실전입니다.")
     st.info("💡 전략의 승률을 극대화하려면 수수료 할인이 필수입니다. 아래 링크를 통해 평생 수수료 할인 계정을 만드세요.")
     st.link_button("⚫ 바이비트(Bybit) 수수료 할인 및 VIP 혜택 가입", "https://www.bybit.com/register?affiliate_id=총감독님_아이디", type="primary")
+
 
