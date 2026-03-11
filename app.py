@@ -14,7 +14,7 @@ st.title("🚀 업비트 퀀트 매매기법 테스트")
 st.markdown("### 📊 수십 가지 지표를 조합하여 업비트 최적의 거래 조건을 설계하세요!")
 
 # ==========================================
-# 2. 🌟 업비트 전용 데이터 무제한 수집 엔진 (지수 백오프 장착)
+# 2. 🌟 업비트 전용 데이터 무제한 수집 엔진 (극강의 우회 & 백오프 장착)
 # ==========================================
 @st.cache_data(show_spinner=False)
 def fetch_upbit_data(ticker, start_date, end_date):
@@ -32,34 +32,34 @@ def fetch_upbit_data(ticker, start_date, end_date):
     for step in range(target_steps): 
         success = False
         
-        # 🌟 [강력한 재시도 로직] 최대 5번, 대기 시간을 2배씩 늘려가며 끈질기게 요청
-        for retry in range(5): 
+        # 🌟 [강력 패치] 재시도 횟수를 7회로 늘리고 대기 시간을 대폭 확장
+        for retry in range(7): 
             try:
                 df = pyupbit.get_ohlcv(ticker, interval="minute5", to=to_dt, count=200)
                 if df is not None and not df.empty:
                     dfs.append(df)
                     to_dt = df.index[0]
                     success = True
-                    break  # 성공 시 재시도 루프 탈출
+                    break  
             except Exception:
                 pass
             
-            # 실패 시 0.5초 -> 1초 -> 2초 -> 4초 -> 8초 대기 (Exponential Backoff)
+            # 실패 시 대기 시간: 0.5초 -> 1초 -> 2초 -> 4초 -> 8초 -> 16초 -> 32초
             wait_time = 0.5 * (2 ** retry)
+            progress.progress(min((step + 1) / target_steps, 1.0), text=f"⚠️ 공용 서버 트래픽 혼잡! {wait_time}초 대기 후 재시도 중... (현재 {len(dfs)*200:,}봉 완료)")
             time.sleep(wait_time)
         
-        # 5번의 처절한 시도에도 실패했다면 루프 종료
         if not success:
             break
             
         current_progress = min((step + 1) / target_steps, 1.0)
-        progress.progress(current_progress, text=f"📥 거래소 데이터 수집 중... ({len(dfs)*200:,}봉 완료 / 목표 {target_steps*200:,}봉)")
+        progress.progress(current_progress, text=f"📥 데이터 수집 중... ({len(dfs)*200:,}봉 완료 / 목표 {target_steps*200:,}봉)")
         
         if to_dt <= start_dt:
             break
             
-        # 🌟 [기본 쿨다운 상향] 스트림릿 공용 IP의 한계를 극복하기 위해 기본 휴식을 0.25초로 상향
-        time.sleep(0.25) 
+        # 🌟 [강력 패치] 기본 쿨다운을 0.5초로 2배 상향 (안전 제일)
+        time.sleep(0.5) 
         
     progress.empty() 
     
@@ -70,13 +70,11 @@ def fetch_upbit_data(ticker, start_date, end_date):
     res = res[~res.index.duplicated(keep='first')]
     
     actual_start = res.index[0]
-    # 오차 범위를 1일에서 1시간으로 정밀하게 조정하여 불필요한 경고 차단
     if actual_start > start_dt + pd.Timedelta(hours=1):
-        st.warning(f"⚠️ 업비트 API 서버 과부하로 인해 {actual_start.strftime('%Y-%m-%d %H:%M')} 이전 데이터는 누락되었습니다. (수집 구간: {actual_start.strftime('%m/%d')} ~ {end_dt.strftime('%m/%d')})")
+        st.warning(f"⚠️ 스트림릿 공용 서버 한계로 {actual_start.strftime('%Y-%m-%d %H:%M')} 이전 데이터가 누락되었습니다.\n💡 참고: 본인 PC(로컬)나 개인 서버에서 구동할 경우 이 제한 없이 수년 치 데이터를 한 번에 가져올 수 있습니다.")
 
     res = res[(res.index >= start_dt) & (res.index < end_dt)]
     
-    # 🔴 [안전장치] 슬라이싱 후 데이터가 텅 비었을 경우의 크래시 방어
     if res.empty:
         return None
         
@@ -391,5 +389,6 @@ if run_btn:
     with tab2:
         st.markdown("이 무료 백테스트 사이트가 여러분의 투자에 도움이 되셨다면, 커피 한 잔의 여유를 선물해 주세요! ☕")
         st.link_button("💸 개발자 토스 익명 송금하기", "https://toss.me/총감독님", use_container_width=True)
+
 
 
