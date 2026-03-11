@@ -327,10 +327,5 @@ if run_btn:
     fig.update_layout(height=650, template="plotly_dark", xaxis_rangeslider_visible=False)
     st.plotly_chart(fig, use_container_width=True)
     
-    # 🌟 [신규] VIP 텔레그램 시그널 방 비즈니스 모델로 교체
-    st.markdown("---")
-    st.markdown("### 🔔 백테스트에서 찾은 완벽한 타점, 이제 실시간으로 받아보세요!")
-    st.info("💡 하루 종일 차트만 들여다볼 수는 없습니다. 총감독의 VIP 봇이 이 사이트의 필승 로직이 겹치는 정확한 순간, 여러분의 텔레그램으로 실시간 매수/매도 알림을 쏴드립니다.")
-    
-    # 총감독님의 텔레그램 주소나 결제 링크를 아래에 넣으세요
-    st.link_button("🚀 VIP 텔레그램 시그널 방 입장하기 (선착순 마감)", "https://t.me/총감독님_텔레그램_주소", type="primary", use_container_width=True)
+
+
