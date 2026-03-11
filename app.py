@@ -102,7 +102,7 @@ def check_time_filter(dt, params):
     return False
 
 # ==========================================
-# 4. 백테스트 코어 엔진
+# 4. 백테스트 코어 엔진 (청산 로직 업그레이드)
 # ==========================================
 def run_backtest_ultimate(df, p):
     balance = 10_000 
@@ -143,8 +143,19 @@ def run_backtest_ultimate(df, p):
         elif position > 0:
             elapsed_mins = (next_candle['timestamp'] - entry_time).total_seconds() / 60
             base_tp = entry_price * (1 + p['tp_pct'] / 100)
-            target_price = max(current['bb_mid'], base_tp) if p['exit_mode'] == "🎯 Max 모드" else min(current['bb_mid'], base_tp) 
             
+            # 🌟 [신규] 볼린저 밴드 목표가 설정 로직
+            if p['bb_exit_target'] == "사용 안 함 (오직 목표수익% 적용)":
+                target_price = base_tp
+            else:
+                bb_target_price = current['bb_mid'] if p['bb_exit_target'] == "BB 중앙선 터치 시" else current['bb_upper']
+                
+                if p['exit_mode'] == "🎯 Max 모드 (수익 극대화)":
+                    target_price = max(bb_target_price, base_tp)
+                else: # OR 모드
+                    target_price = min(bb_target_price, base_tp) 
+            
+            # 다운시프트 개입
             if p['use_downshift'] and elapsed_mins >= p['downshift_mins']:
                 target_price = min(target_price, entry_price * (1 + p['downshift_tp_pct'] / 100))
                 
@@ -221,51 +232,56 @@ with st.sidebar.expander("📉 볼린저 밴드 & 변동성", expanded=True):
     p['bb_width_limit'] = st.number_input("최소 BB폭 (%)", value=1.2, step=0.1)
     st.markdown("---")
     p['use_bb_touch'] = st.checkbox("밴드 하단 터치", value=True)
-    # 🔴 [안전장치] int() 래핑 적용
     p['bb_window'] = int(st.number_input("BB 기간", value=20))
     p['bb_mult'] = st.number_input("BB 승수", value=2.0, step=0.1)
 
 with st.sidebar.expander("📈 이동평균 & MACD"):
     p['use_ma_cross'] = st.checkbox("단순이평(SMA) 골든크로스")
-    # 🔴 [안전장치] int() 래핑 적용
-    p['ma_fast'] = int(st.number_input("SMA 단기", value=10))
-    p['ma_slow'] = int(st.number_input("SMA 장기", value=20))
+    p['ma_fast'] = int(st.number_input("SMA 단기", value=10)); p['ma_slow'] = int(st.number_input("SMA 장기", value=20))
     st.markdown("---")
     p['use_ema_cross'] = st.checkbox("지수이평(EMA) 골든크로스")
-    # 🔴 [안전장치] int() 래핑 적용
-    p['ema_fast'] = int(st.number_input("EMA 단기", value=10))
-    p['ema_slow'] = int(st.number_input("EMA 장기", value=20))
+    p['ema_fast'] = int(st.number_input("EMA 단기", value=10)); p['ema_slow'] = int(st.number_input("EMA 장기", value=20))
     st.markdown("---")
     p['use_macd'] = st.checkbox("MACD 0선 돌파")
     p['macd_short'] = 12; p['macd_long'] = 26; p['macd_signal_len'] = 9
 
 with st.sidebar.expander("🌊 오실레이터 & 슈퍼트렌드"):
     p['use_rsi'] = st.checkbox("RSI 과매도")
-    # 🔴 [안전장치] int() 래핑 적용
-    p['rsi_period'] = int(st.number_input("RSI 기간", value=14))
-    p['rsi_buy_limit'] = st.number_input("진입선", value=30.0)
+    p['rsi_period'] = int(st.number_input("RSI 기간", value=14)); p['rsi_buy_limit'] = st.number_input("진입선", value=30.0)
     st.markdown("---")
     p['use_stoch_cross'] = st.checkbox("스토캐스틱 골든크로스")
-    # 🔴 [안전장치] int() 래핑 적용
-    p['stoch_k_len'] = int(st.number_input("K 기간", value=5))
-    p['stoch_k_smooth'] = 3; p['stoch_d_smooth'] = 3
+    p['stoch_k_len'] = int(st.number_input("K 기간", value=5)); p['stoch_k_smooth'] = 3; p['stoch_d_smooth'] = 3
     st.markdown("---")
     p['use_supertrend'] = st.checkbox("슈퍼트렌드 상승 전환")
-    # 🔴 [안전장치] int() 래핑 적용
-    p['st_atr'] = int(st.number_input("ATR 기간", value=10))
-    p['st_mult'] = st.number_input("승수", value=3.0)
+    p['st_atr'] = int(st.number_input("ATR 기간", value=10)); p['st_mult'] = st.number_input("승수", value=3.0)
 
+# 🌟 [신규] 청산 전략 UI 대폭 업그레이드
 st.sidebar.markdown("---")
 st.sidebar.header("🛡️ 4. 청산 전략 (Exit)")
+
 c_tp, c_sl = st.sidebar.columns(2)
-p['tp_pct'] = c_tp.number_input("✅ 익절 %", value=1.0, step=0.1)
+p['tp_pct'] = c_tp.number_input("✅ 목표수익 %", value=1.0, step=0.1)
 p['sl_pct'] = c_sl.number_input("🛑 손절 %", value=2.0, step=0.1)
-p['exit_mode'] = st.sidebar.radio("청산 모드", ["🎯 Max 모드", "⚡ OR 모드"])
-p['use_dead_cross'] = st.sidebar.checkbox("📉 SMA 데드크로스 비상 탈출")
-p['use_downshift'] = st.sidebar.checkbox("⏳ 다운시프트 (시간 지체 시 탈출)", value=True)
+
+st.sidebar.markdown("##### 🎯 볼린저 밴드 연동 익절")
+p['bb_exit_target'] = st.sidebar.radio(
+    "어느 선에서 익절하시겠습니까?", 
+    ["BB 중앙선 터치 시", "BB 상단선 터치 시", "사용 안 함 (오직 목표수익% 적용)"], 
+    index=0
+)
+
+st.sidebar.markdown("##### ⚖️ 익절 결합 모드")
+p['exit_mode'] = st.sidebar.radio(
+    "목표수익% 와 볼밴 라인이 겹칠 때", 
+    ["🎯 Max 모드 (수익 극대화)", "⚡ OR 모드 (빠른 청산)"],
+    help="• Max 모드: 정해둔 %와 볼밴 라인 중 더 '높은' 가격을 기다려 크게 먹습니다.\n• OR 모드: 정해둔 %나 볼밴 라인 중 아무거나 먼저 닿으면 미련 없이 팝니다."
+)
+
+st.sidebar.markdown("---")
+p['use_dead_cross'] = st.sidebar.checkbox("📉 SMA 데드크로스 비상 탈출", help="목표가에 안 왔어도 단기 이평선이 장기 이평선을 뚫고 내려가면 즉시 던집니다.")
+p['use_downshift'] = st.sidebar.checkbox("⏳ 다운시프트 (시간 지체 시 탈출)", value=True, help="물려서 시간이 오래 지나면 목표가를 강제로 낮춰서 본절 부근에서 탈출합니다.")
 if p['use_downshift']:
     c_dsm, c_dsp = st.sidebar.columns(2)
-    # 🔴 [안전장치] int() 래핑 적용
     p['downshift_mins'] = int(c_dsm.number_input("발동(분)", value=60))
     p['downshift_tp_pct'] = c_dsp.number_input("하향 %", value=0.2, step=0.1)
 
@@ -296,7 +312,7 @@ if run_btn:
     avg_profit = np.mean(trades) if total_trades > 0 else 0
     
     st.subheader(f"📊 백테스트 리포트: {ticker} ({tf_choice})")
-    st.caption(f"조건 결합: {p['logic_op']} | 타이밍: {p['entry_timing']}")
+    st.caption(f"진입 조건: {p['logic_op']} | 매수 타이밍: {p['entry_timing']}")
     
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("최종 수익률", f"{profit:.2f}%")
@@ -311,10 +327,10 @@ if run_btn:
     fig.update_layout(height=650, template="plotly_dark", xaxis_rangeslider_visible=False)
     st.plotly_chart(fig, use_container_width=True)
     
+    # 🌟 [신규] VIP 텔레그램 시그널 방 비즈니스 모델로 교체
     st.markdown("---")
-    st.markdown("### 💰 완벽한 타점을 찾으셨나요? 이제 실전입니다.")
-    st.info("💡 전략의 승률을 극대화하려면 수수료 할인이 필수입니다. 아래 링크를 통해 평생 수수료 할인 계정을 만드세요.")
-    st.link_button("⚫ 바이비트(Bybit) 수수료 할인 및 VIP 혜택 가입", "https://www.bybit.com/register?affiliate_id=총감독님_아이디", type="primary")
-
-
-
+    st.markdown("### 🔔 백테스트에서 찾은 완벽한 타점, 이제 실시간으로 받아보세요!")
+    st.info("💡 하루 종일 차트만 들여다볼 수는 없습니다. 총감독의 VIP 봇이 이 사이트의 필승 로직이 겹치는 정확한 순간, 여러분의 텔레그램으로 실시간 매수/매도 알림을 쏴드립니다.")
+    
+    # 총감독님의 텔레그램 주소나 결제 링크를 아래에 넣으세요
+    st.link_button("🚀 VIP 텔레그램 시그널 방 입장하기 (선착순 마감)", "https://t.me/총감독님_텔레그램_주소", type="primary", use_container_width=True)
